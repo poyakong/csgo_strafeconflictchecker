@@ -7,6 +7,10 @@
 char strafeHistory[128];
 char leftHistory[128];
 char rightHistory[128];
+char conflictHistory[128];
+int conflictCount = 0;
+int deadAirCount = 0;
+int accelerateCount = 0;
 int historyIndex = 0;
 bool isRecording = false;
 
@@ -21,6 +25,7 @@ static float lastAngles[MAXPLAYERS + 1][3];
 // static float strafeHud_x[MAXPLAYERS + 1] = -1.0;
 // static float strafeHud_y[MAXPLAYERS + 1] = 0.1;
 static bool strafeHudEnable_solo = true;
+static bool strafeHudEnable_solo_advanced = true;
 static float strafeHud_x_solo = -1.0;
 static float strafeHud_y_solo = 0.2;
 
@@ -29,7 +34,7 @@ public Plugin myinfo =
 	name = "Strafe Conflict Checker",
 	author = "poyakong",
 	description = "Strafe Conflict Checker",
-	version = "0.1.2",
+	version = "0.1.4",
 	url = "https://github.com/poyakong"
 };
 
@@ -40,6 +45,7 @@ public void OnPluginStart()
 
 	// 注册控制HUD的控制台指令
 	RegConsoleCmd("sm_strafehud", Command_StrafeHud, "Toggle Strafe HUD display");
+	RegConsoleCmd("sm_strafehud_advanced", Command_StrafeHud_Advanced, "Toggle Strafe HUD display for advanced strafe information");
 
 	// 加载配置
 	BuildPath(Path_SM, g_sConfigFile, sizeof(g_sConfigFile), "configs/strafeconflictchecker.cfg");
@@ -78,6 +84,13 @@ public Action Command_StrafeHud(int client, int args)
 	return Plugin_Handled;
 }
 
+public Action Command_StrafeHud_Advanced(int client, int args)
+{
+	strafeHudEnable_solo_advanced = !strafeHudEnable_solo_advanced;
+	ReplyToCommand(client, "[SM] Strafe HUD Advanced %s", strafeHudEnable_solo_advanced ? "Enabled" : "Disabled");
+	return Plugin_Handled;
+}
+
 public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3], float angles[3], int& weapon, int& subtype, int& cmdnum, int& tickcount, int& seed, int mouse[2])
 {
 	if (!IsPlayerAlive(client) || !strafeHudEnable_solo) return Plugin_Continue;
@@ -101,7 +114,7 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
 	lastAngles[client][1] = angles[1];
 
 	// 检查是否在空中并记录按键历史
-	if (GetEntityFlags(client) & FL_ONGROUND == 0) 
+	if ((GetEntityFlags(client) & FL_ONGROUND == 0 ) && (GetEntityMoveType(client) != MOVETYPE_LADDER)) 
 	{
 		// 记录历史
 		if (!isRecording) 
@@ -113,6 +126,22 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
 		strafeHistory[historyIndex] = strafeSymbol;
 		leftHistory[historyIndex] = (buttons & IN_MOVELEFT) ? 'A' : '-';
 		rightHistory[historyIndex] = (buttons & IN_MOVERIGHT) ? 'D' : '-';
+		if((strafeAngleDirection == 1 && (buttons & IN_MOVERIGHT) )||(strafeAngleDirection == 2 && (buttons & IN_MOVELEFT)))
+		{
+		conflictHistory[historyIndex] = 'x';
+		conflictCount++;
+		} else if((strafeAngleDirection == 2 && (buttons & IN_MOVERIGHT) && !(buttons & IN_MOVELEFT))) {
+		conflictHistory[historyIndex] = ' ';
+		accelerateCount++;
+		}
+		else if((strafeAngleDirection == 1 && (buttons & IN_MOVELEFT) && !(buttons & IN_MOVERIGHT))) {
+		conflictHistory[historyIndex] = ' ';
+		accelerateCount++;
+		} else {
+		conflictHistory[historyIndex] = ' ';
+		deadAirCount++;
+		}
+		
 
 		historyIndex++;
 
@@ -123,7 +152,7 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
 			ResetHistory();
 		}
 	}
-	else if (isRecording && GetEntityFlags(client) & FL_ONGROUND) 
+	else if (isRecording) 
 	{
 		// 玩家落地，打印历史
 		PrintHistoryToConsole(client);
@@ -132,16 +161,14 @@ public Action OnPlayerRunCmd(int client, int& buttons, int& impulse, float vel[3
 
 	// 显示HUD信息
 	char hudMessage[64];
-	int buttonsPressed = buttons;
+	// int buttonsPressed = buttons;
 	Format(hudMessage, sizeof(hudMessage), 
 		"%s—%s\n%s—%s", 
 		(strafeAngleDirection == 1) ? "<" : "—", (strafeAngleDirection == 2) ? ">" : "—",
-		(buttonsPressed & IN_MOVELEFT) ? "A" : "—", (buttonsPressed & IN_MOVERIGHT) ? "D" : "—"
+		(buttons & IN_MOVELEFT) ? "A" : "—", (buttons & IN_MOVERIGHT) ? "D" : "—"
 	);
-	if(strafeAngleDirection == 1 && (buttonsPressed & IN_MOVERIGHT))
-	{
-		SetHudTextParams(strafeHud_x_solo, strafeHud_y_solo, 0.1, 255, 0, 0, 0, 0, 0.0, 0.0, 0.0);
-	} else if(strafeAngleDirection == 2 && (buttonsPressed & IN_MOVELEFT))
+
+	if((strafeAngleDirection == 1 && (buttons & IN_MOVERIGHT) )||(strafeAngleDirection == 2 && (buttons & IN_MOVELEFT)))
 	{
 		SetHudTextParams(strafeHud_x_solo, strafeHud_y_solo, 0.1, 255, 0, 0, 0, 0, 0.0, 0.0, 0.0);
 	} else {
@@ -162,7 +189,19 @@ float NormalizeAngle(float angle)
 
 void PrintHistoryToConsole(int client) 
 {
-	if (historyIndex > 0) 
+	if (historyIndex <= 0)
+		return;
+	// 20250325 Advanced Strafe History
+	if (strafeHudEnable_solo_advanced)
+	{
+		PrintToConsole(client, "Strafe History: [%d] [%d] [%d] [%d]", accelerateCount, deadAirCount, conflictCount, historyIndex);
+		// PrintToConsole(client, "Strafe History: Good[%d] DeadAir[%d] Conflict[%d] Total[%d]", accelerateCount, deadAirCount, conflictCount, historyIndex);
+		PrintToConsole(client, "%s", strafeHistory);
+		PrintToConsole(client, "%s", leftHistory);
+		PrintToConsole(client, "%s\n", rightHistory);
+		PrintToConsole(client, "%s\n", conflictHistory);
+	} else
+	// 20250325 Normal Strafe History
 	{
 		PrintToConsole(client, "Strafe History:");
 		PrintToConsole(client, "%s", strafeHistory);
@@ -179,8 +218,12 @@ void ResetHistory()
 		strafeHistory[i] = '\0';
 		leftHistory[i] = '\0';
 		rightHistory[i] = '\0';
+		conflictHistory[i] = '\0';
 	}
 	historyIndex = 0;
+	conflictCount = 0;
+	deadAirCount = 0;
+	accelerateCount = 0;
 	isRecording = false;
 }
 
@@ -199,6 +242,7 @@ void LoadConfig()
 		{
 			// 读取配置值
 			strafeHudEnable_solo = view_as<bool>(KvGetNum(kvConfig, "strafeHudEnable_solo", 1));
+			strafeHudEnable_solo_advanced = view_as<bool>(KvGetNum(kvConfig, "strafeHudEnable_solo_advanced", 1));
 			strafeHud_x_solo = KvGetFloat(kvConfig, "strafeHud_x_solo", -1.0);
 			strafeHud_y_solo = KvGetFloat(kvConfig, "strafeHud_y_solo", 0.1);
 			
@@ -229,6 +273,7 @@ void SaveConfig()
 	
 	// 设置值
 	KvSetNum(kvConfig, "strafeHudEnable_solo", view_as<int>(strafeHudEnable_solo));
+	KvSetNum(kvConfig, "strafeHudEnable_solo_advanced", view_as<int>(strafeHudEnable_solo_advanced));
 	KvSetFloat(kvConfig, "strafeHud_x_solo", strafeHud_x_solo);
 	KvSetFloat(kvConfig, "strafeHud_y_solo", strafeHud_y_solo);
 	
